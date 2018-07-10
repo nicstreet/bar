@@ -16,6 +16,7 @@
 #include <xcb/xinerama.h>
 #endif
 #include <xcb/randr.h>
+#include <xcb/xcb_ewmh.h>
 
 // Here be dragons
 
@@ -84,6 +85,7 @@ enum {
 #define MAX_FONT_COUNT 5
 
 static xcb_connection_t *c;
+static xcb_ewmh_connection_t *ewmh;
 static xcb_screen_t *scr;
 static xcb_gcontext_t gc[GC_MAX];
 static xcb_visualid_t visual;
@@ -707,68 +709,41 @@ font_load (const char *pattern)
     font_list[font_count++] = ret;
 }
 
-enum {
-    NET_WM_WINDOW_TYPE,
-    NET_WM_WINDOW_TYPE_DOCK,
-    NET_WM_DESKTOP,
-    NET_WM_STRUT_PARTIAL,
-    NET_WM_STRUT,
-    NET_WM_STATE,
-    NET_WM_STATE_STICKY,
-    NET_WM_STATE_ABOVE,
-};
-
 void
 set_ewmh_atoms (void)
 {
-    const char *atom_names[] = {
-        "_NET_WM_WINDOW_TYPE",
-        "_NET_WM_WINDOW_TYPE_DOCK",
-        "_NET_WM_DESKTOP",
-        "_NET_WM_STRUT_PARTIAL",
-        "_NET_WM_STRUT",
-        "_NET_WM_STATE",
-        // Leave those at the end since are batch-set
-        "_NET_WM_STATE_STICKY",
-        "_NET_WM_STATE_ABOVE",
-    };
-    const int atoms = sizeof(atom_names)/sizeof(char *);
-    xcb_intern_atom_cookie_t atom_cookie[atoms];
-    xcb_atom_t atom_list[atoms];
-    xcb_intern_atom_reply_t *atom_reply;
+    xcb_intern_atom_cookie_t *cookie;
 
-    // As suggested fetch all the cookies first (yum!) and then retrieve the
-    // atoms to exploit the async'ness
-    for (int i = 0; i < atoms; i++)
-        atom_cookie[i] = xcb_intern_atom(c, 0, strlen(atom_names[i]), atom_names[i]);
-
-    for (int i = 0; i < atoms; i++) {
-        atom_reply = xcb_intern_atom_reply(c, atom_cookie[i], NULL);
-        if (!atom_reply)
-            return;
-        atom_list[i] = atom_reply->atom;
-        free(atom_reply);
+    ewmh = calloc(1, sizeof(xcb_ewmh_connection_t));
+    if (ewmh == NULL) {
+        fprintf(stderr, "could not allocate ewmh resource\n");
+        return;
     }
+    cookie = xcb_ewmh_init_atoms(c, ewmh);
+    xcb_ewmh_init_atoms_replies(ewmh, cookie, (void *)0);
 
     // Prepare the strut array
     for (monitor_t *mon = monhead; mon; mon = mon->next) {
-        int strut[12] = {0};
+        xcb_ewmh_wm_strut_partial_t strut;
         if (topbar) {
-            strut[2] = bh;
-            strut[8] = mon->x;
-            strut[9] = mon->x + mon->width - 1;
+            strut.top = bh;
+            strut.top_start_x = mon->x;
+            strut.top_end_x = mon->x + mon->width - 1;
         } else {
-            strut[3]  = bh;
-            strut[10] = mon->x;
-            strut[11] = mon->x + mon->width - 1;
+            strut.bottom = bh;
+            strut.bottom_start_x = mon->x;
+            strut.bottom_end_x = mon->x + mon->width - 1;
         }
 
-        xcb_change_property(c, XCB_PROP_MODE_REPLACE, mon->window, atom_list[NET_WM_WINDOW_TYPE], XCB_ATOM_ATOM, 32, 1, &atom_list[NET_WM_WINDOW_TYPE_DOCK]);
-        xcb_change_property(c, XCB_PROP_MODE_APPEND,  mon->window, atom_list[NET_WM_STATE], XCB_ATOM_ATOM, 32, 2, &atom_list[NET_WM_STATE_STICKY]);
-        xcb_change_property(c, XCB_PROP_MODE_REPLACE, mon->window, atom_list[NET_WM_DESKTOP], XCB_ATOM_CARDINAL, 32, 1, (const uint32_t []){ -1 } );
-        xcb_change_property(c, XCB_PROP_MODE_REPLACE, mon->window, atom_list[NET_WM_STRUT_PARTIAL], XCB_ATOM_CARDINAL, 32, 12, strut);
-        xcb_change_property(c, XCB_PROP_MODE_REPLACE, mon->window, atom_list[NET_WM_STRUT], XCB_ATOM_CARDINAL, 32, 4, strut);
-        xcb_change_property(c, XCB_PROP_MODE_REPLACE, mon->window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, 3, "bar");
+        xcb_ewmh_set_wm_window_type(ewmh, mon->window, 1,
+            (xcb_atom_t []) {ewmh->_NET_WM_WINDOW_TYPE_DOCK} );
+        xcb_ewmh_set_wm_state(ewmh, mon->window, 1,
+            (xcb_atom_t []) {ewmh->_NET_WM_STATE_STICKY} );
+        xcb_ewmh_set_wm_desktop(ewmh, mon->window, -1);
+        xcb_ewmh_set_wm_strut_partial(ewmh, mon->window, strut);
+        xcb_ewmh_set_wm_strut(ewmh, mon->window,
+                0, 0, strut.top, strut.bottom);
+        xcb_ewmh_set_wm_name(ewmh, mon->window, 3, "bar");
     }
 }
 
@@ -1401,6 +1376,10 @@ main (int argc, char **argv)
         }
 
         xcb_flush(c);
+    }
+    if (ewmh != NULL) {
+        xcb_ewmh_connection_wipe(ewmh);
+        free(ewmh);
     }
 
     return EXIT_SUCCESS;
