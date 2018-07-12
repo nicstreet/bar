@@ -105,7 +105,7 @@ static int font_index = -1;
 static uint32_t attrs = 0;
 static bool dock = false;
 static bool topbar = true;
-static bool rotate_text = false;
+static int rotate_text = 0; // not rotated (0), 90deg (1), -90deg (2)
 static int bw = -1, bh = -1, bx = 0, by = 0;
 static int bu = 1; // Underline height
 static rgba_t fgc, bgc, ugc;
@@ -200,7 +200,12 @@ rotate_pixmap(xcb_connection_t *c, xcb_pixmap_t from, xcb_pixmap_t to)
             values); // make it smooth
 
     xcb_render_transform_t  transform;
-    double angle = M_PI / 180 * 90; // 90 degrees
+    double angle = M_PI / 180;
+    if (rotate_text == 1) {
+        angle *= 90;
+    } else {
+        angle *= -90;
+    }
     double sina = sin(angle);
     double cosa = cos(angle);
 
@@ -225,8 +230,8 @@ rotate_pixmap(xcb_connection_t *c, xcb_pixmap_t from, xcb_pixmap_t to)
             picture,
             pic_mask,
             back_pix,
-            -p_size.width, //shifted by
-            0,
+            (rotate_text == 2 ? 0 : -p_size.width), //shifted by
+            (rotate_text == 1 ? 0 : -p_size.height),
             0,
             0,
             0,
@@ -892,7 +897,7 @@ monitor_new (int x, int y, int width, int height)
 
     ret->x = x;
     ret->y = (topbar ? by : height - bh - by) + y;
-    if (rotate_text == false) {
+    if (rotate_text == 0) {
         ret->width = width;
     } else {
         ret->width = min(bw, height - bx);
@@ -903,7 +908,7 @@ monitor_new (int x, int y, int width, int height)
     int depth = (visual == scr->root_visual) ? XCB_COPY_FROM_PARENT : 32;
     ret->depth = depth;
 
-    if (rotate_text == false) {
+    if (rotate_text == 0) {
         xcb_create_window(c, depth, ret->window, scr->root,
             ret->x, ret->y, width, bh, 0,
             XCB_WINDOW_CLASS_INPUT_OUTPUT, visual,
@@ -918,7 +923,7 @@ monitor_new (int x, int y, int width, int height)
     }
 
     ret->pixmap = xcb_generate_id(c);
-    if (rotate_text == false) {
+    if (rotate_text == 0) {
         xcb_create_pixmap(c, depth, ret->pixmap, ret->window, width, bh);
     } else {
         xcb_create_pixmap(c, depth, ret->pixmap, ret->window, ret->width, bh);
@@ -1414,7 +1419,7 @@ main (int argc, char **argv)
     // Connect to the Xserver and initialize scr
     xconn();
 
-    while ((ch = getopt(argc, argv, "hg:brdf:a:pu:B:F:U:n:")) != -1) {
+    while ((ch = getopt(argc, argv, "hg:brRdf:a:pu:B:F:U:n:")) != -1) {
         switch (ch) {
             case 'h':
                 printf ("lemonbar version %s\n", VERSION);
@@ -1429,6 +1434,7 @@ main (int argc, char **argv)
                         "\t-n Set the WM_NAME atom to the specified value for this bar\n"
                         "\t-u Set the underline/overline height in pixels\n"
                         "\t-r Rotate text 90deg to the right\n"
+                        "\t-R Rotate text 90deg to the left\n"
                         "\t-B Set background color in #AARRGGBB\n"
                         "\t-F Set foreground color in #AARRGGBB\n", argv[0]);
                 exit (EXIT_SUCCESS);
@@ -1436,7 +1442,8 @@ main (int argc, char **argv)
             case 'p': permanent = true; break;
             case 'n': wm_name = strdup(optarg); break;
             case 'b': topbar = false; break;
-            case 'r': rotate_text = true; break;
+            case 'R': rotate_text = 2; break;
+            case 'r': rotate_text = 1; break;
             case 'd': dock = true; break;
             case 'f': font_load(optarg); break;
             case 'u': bu = strtoul(optarg, NULL, 10); break;
@@ -1524,7 +1531,7 @@ main (int argc, char **argv)
 
         if (redraw) { // Copy our temporary pixmap onto the window
             for (monitor_t *mon = monhead; mon; mon = mon->next) {
-                if (rotate_text) {
+                if (rotate_text != 0) {
                     xcb_pixmap_t rotate_pmap = xcb_generate_id(c);
                     // reverse width and height
                     xcb_create_pixmap(c, mon->depth, rotate_pmap, mon->window, bh, mon->width);
