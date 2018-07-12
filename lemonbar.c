@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <ctype.h>
 #include <signal.h>
@@ -16,7 +17,13 @@
 #include <xcb/xinerama.h>
 #endif
 #include <xcb/randr.h>
+#include <xcb/render.h>
 #include <xcb/xcb_ewmh.h>
+#include <xcb/xcb_renderutil.h>
+
+#ifndef M_PI
+#define M_PI           3.14159265358979323846
+#endif
 
 // Here be dragons
 
@@ -34,6 +41,7 @@ typedef struct font_t {
 
 typedef struct monitor_t {
     int x, y, width;
+    uint8_t depth;
     xcb_window_t window;
     xcb_pixmap_t pixmap;
     struct monitor_t *prev, *next;
@@ -97,11 +105,135 @@ static int font_index = -1;
 static uint32_t attrs = 0;
 static bool dock = false;
 static bool topbar = true;
+static bool rotate_text = false;
 static int bw = -1, bh = -1, bx = 0, by = 0;
 static int bu = 1; // Underline height
 static rgba_t fgc, bgc, ugc;
 static rgba_t dfgc, dbgc, dugc;
 static area_stack_t area_stack;
+
+
+xcb_render_fixed_t
+float_to_fixed(float f)
+{
+	return f * 0x10000;
+}
+
+xcb_rectangle_t
+get_drawable_size(xcb_connection_t *c, xcb_drawable_t drawable)
+{
+    xcb_get_geometry_cookie_t cookie;
+    xcb_generic_error_t *e;
+    xcb_get_geometry_reply_t *geom;
+    xcb_rectangle_t sizes;
+
+    cookie = xcb_get_geometry(c, drawable);
+    geom = xcb_get_geometry_reply(c, cookie, &e);
+
+    sizes.width = geom->width;
+    sizes.height = geom->height;
+    sizes.x = geom->x;
+    sizes.y = geom->y;
+
+    free(geom);
+
+    return sizes;
+}
+
+
+uint8_t
+get_drawable_depth(xcb_connection_t *c, xcb_drawable_t drawable)
+{
+    xcb_get_geometry_cookie_t cookie;
+    xcb_generic_error_t *e;
+    xcb_get_geometry_reply_t *geom;
+    uint8_t depth = 0;
+
+    cookie = xcb_get_geometry(c, drawable);
+    geom = xcb_get_geometry_reply(c, cookie, &e);
+    depth = geom->depth;
+    free(geom);
+
+    return depth;
+}
+
+
+void
+rotate_pixmap(xcb_connection_t *c, xcb_pixmap_t from, xcb_pixmap_t to)
+{
+    xcb_render_picture_t picture, pic_mask, back_pix;
+    xcb_render_pictforminfo_t *fmt;
+    const xcb_render_query_pict_formats_reply_t *fmt_rep =
+        xcb_render_util_query_formats(c);
+    uint32_t values[2];
+    fmt = xcb_render_util_find_standard_format(
+            fmt_rep,
+            XCB_PICT_STANDARD_ARGB_32
+            );
+
+    // create the picture with its attribute and format
+    picture = xcb_generate_id(c);
+    pic_mask = xcb_generate_id(c);
+    back_pix = xcb_generate_id(c);
+    values[0] = XCB_RENDER_POLY_MODE_IMPRECISE;
+    values[1] = XCB_RENDER_POLY_EDGE_SMOOTH;
+
+    xcb_render_create_picture_checked(c,
+            picture, // pid
+            from, // drawable from the user
+            fmt->id, // format
+            XCB_RENDER_CP_POLY_MODE|XCB_RENDER_CP_POLY_EDGE,
+            values); // make it smooth
+
+    xcb_render_create_picture_checked(c,
+            pic_mask, // pid
+            to, // drawable from the user
+            fmt->id, // format
+            XCB_RENDER_CP_POLY_MODE|XCB_RENDER_CP_POLY_EDGE,
+            values); // make it smooth
+
+    xcb_render_create_picture_checked(c,
+            back_pix, // pid
+            to, // drawable from the user
+            fmt->id, // format
+            XCB_RENDER_CP_POLY_MODE|XCB_RENDER_CP_POLY_EDGE,
+            values); // make it smooth
+
+    xcb_render_transform_t  transform;
+    double angle = M_PI / 180 * 90; // 90 degrees
+    double sina = sin(angle);
+    double cosa = cos(angle);
+
+    transform.matrix11 = float_to_fixed(cosa);
+    transform.matrix12 = float_to_fixed(sina);
+    transform.matrix13 = float_to_fixed(0.0);
+
+    transform.matrix21 = float_to_fixed(-sina);
+    transform.matrix22 = float_to_fixed(cosa);
+    transform.matrix23 = float_to_fixed(0.0);
+
+    transform.matrix31 = float_to_fixed(0.0);
+    transform.matrix32 = float_to_fixed(0.0);
+    transform.matrix33 = float_to_fixed(1.0);
+
+    xcb_render_set_picture_transform_checked(c, picture, transform);
+
+    xcb_rectangle_t p_size = get_drawable_size(c, to);
+
+    xcb_render_composite_checked (c,
+            XCB_RENDER_PICT_OP_SRC,
+            picture,
+            pic_mask,
+            back_pix,
+            -p_size.width, //shifted by
+            0,
+            0,
+            0,
+            0,
+            0,
+            p_size.width,
+            p_size.height);
+}
 
 void
 update_gc (void)
@@ -760,19 +892,37 @@ monitor_new (int x, int y, int width, int height)
 
     ret->x = x;
     ret->y = (topbar ? by : height - bh - by) + y;
-    ret->width = width;
+    if (rotate_text == false) {
+        ret->width = width;
+    } else {
+        ret->width = min(bw, height - bx);
+    }
     ret->next = ret->prev = NULL;
     ret->window = xcb_generate_id(c);
 
     int depth = (visual == scr->root_visual) ? XCB_COPY_FROM_PARENT : 32;
-    xcb_create_window(c, depth, ret->window, scr->root,
+    ret->depth = depth;
+
+    if (rotate_text == false) {
+        xcb_create_window(c, depth, ret->window, scr->root,
             ret->x, ret->y, width, bh, 0,
             XCB_WINDOW_CLASS_INPUT_OUTPUT, visual,
             XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL | XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK | XCB_CW_COLORMAP,
             (const uint32_t []){ bgc.v, bgc.v, dock, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_BUTTON_PRESS, colormap });
+    } else {
+        xcb_create_window(c, depth, ret->window, scr->root,
+            ret->x, ret->y, bh, ret->width, 0,
+            XCB_WINDOW_CLASS_INPUT_OUTPUT, visual,
+            XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL | XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK | XCB_CW_COLORMAP,
+            (const uint32_t []){ bgc.v, bgc.v, dock, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_BUTTON_PRESS, colormap });
+    }
 
     ret->pixmap = xcb_generate_id(c);
-    xcb_create_pixmap(c, depth, ret->pixmap, ret->window, width, bh);
+    if (rotate_text == false) {
+        xcb_create_pixmap(c, depth, ret->pixmap, ret->window, width, bh);
+    } else {
+        xcb_create_pixmap(c, depth, ret->pixmap, ret->window, ret->width, bh);
+    }
 
     return ret;
 }
@@ -1264,7 +1414,7 @@ main (int argc, char **argv)
     // Connect to the Xserver and initialize scr
     xconn();
 
-    while ((ch = getopt(argc, argv, "hg:bdf:a:pu:B:F:U:n:")) != -1) {
+    while ((ch = getopt(argc, argv, "hg:brdf:a:pu:B:F:U:n:")) != -1) {
         switch (ch) {
             case 'h':
                 printf ("lemonbar version %s\n", VERSION);
@@ -1278,6 +1428,7 @@ main (int argc, char **argv)
                         "\t-p Don't close after the data ends\n"
                         "\t-n Set the WM_NAME atom to the specified value for this bar\n"
                         "\t-u Set the underline/overline height in pixels\n"
+                        "\t-r Rotate text 90deg to the right\n"
                         "\t-B Set background color in #AARRGGBB\n"
                         "\t-F Set foreground color in #AARRGGBB\n", argv[0]);
                 exit (EXIT_SUCCESS);
@@ -1285,6 +1436,7 @@ main (int argc, char **argv)
             case 'p': permanent = true; break;
             case 'n': wm_name = strdup(optarg); break;
             case 'b': topbar = false; break;
+            case 'r': rotate_text = true; break;
             case 'd': dock = true; break;
             case 'f': font_load(optarg); break;
             case 'u': bu = strtoul(optarg, NULL, 10); break;
@@ -1322,6 +1474,7 @@ main (int argc, char **argv)
     free(wm_name);
     // Get the fd to Xserver
     pollin[1].fd = xcb_get_file_descriptor(c);
+
 
     for (;;) {
         bool redraw = false;
@@ -1371,7 +1524,19 @@ main (int argc, char **argv)
 
         if (redraw) { // Copy our temporary pixmap onto the window
             for (monitor_t *mon = monhead; mon; mon = mon->next) {
-                xcb_copy_area(c, mon->pixmap, mon->window, gc[GC_DRAW], 0, 0, 0, 0, mon->width, bh);
+                if (rotate_text) {
+                    xcb_pixmap_t rotate_pmap = xcb_generate_id(c);
+                    // reverse width and height
+                    xcb_create_pixmap(c, mon->depth, rotate_pmap, mon->window, bh, mon->width);
+                    xcb_change_gc(c, gc[GC_DRAW], XCB_GC_FOREGROUND, (const uint32_t []){ fgc.v });
+                    xcb_poly_fill_rectangle(c, rotate_pmap, gc[GC_DRAW], 1, 
+                              (const xcb_rectangle_t []){ { 0, 0, bh, mon->width } });
+                    rotate_pixmap(c, mon->pixmap, rotate_pmap);
+                    xcb_copy_area(c, rotate_pmap, mon->window, gc[GC_DRAW], 0, 0, 0, 0, bh, mon->width);
+                    xcb_free_pixmap(c, rotate_pmap);
+                } else {
+                    xcb_copy_area(c, mon->pixmap, mon->window, gc[GC_DRAW], 0, 0, 0, 0, mon->width, bh);
+                }
             }
         }
 
