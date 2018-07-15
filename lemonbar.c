@@ -1514,7 +1514,15 @@ main (int argc, char **argv)
                         case XCB_BUTTON_PRESS:
                             press_ev = (xcb_button_press_event_t *)ev;
                             {
-                                area_t *area = area_get(press_ev->event, press_ev->detail, press_ev->event_x);
+                                area_t *area = NULL;
+                                if (rotate_text == 0){
+                                    area = area_get(press_ev->event, press_ev->detail, press_ev->event_x);
+                                } else if (rotate_text == 1) {
+                                    area = area_get(press_ev->event, press_ev->detail, press_ev->event_y);
+                                } else if (rotate_text == 2) {
+                                    area = area_get(press_ev->event, press_ev->detail, monhead->width - press_ev->event_y);
+                                }
+
                                 // Respond to the click
                                 if (area) {
                                     (void)write(STDOUT_FILENO, area->cmd, strlen(area->cmd));
