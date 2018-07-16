@@ -900,7 +900,8 @@ monitor_new (int x, int y, int width, int height)
     if (rotate_text == 0) {
         ret->width = width;
     } else {
-        ret->width = min(bw, height - bx);
+        // don't shrink the bar
+        ret->width = bw;
     }
     ret->next = ret->prev = NULL;
     ret->window = xcb_generate_id(c);
@@ -994,9 +995,16 @@ monitor_create_chain (xcb_rectangle_t *rects, const int num)
         bh = font_list[0]->height + bu + 2;
 
     // Check the geometry
-    if (bx + bw > width || by + bh > height) {
-        fprintf(stderr, "The geometry specified doesn't fit the screen!\n");
-        exit(EXIT_FAILURE);
+    if (rotate_text == 0) {
+        if (bx + bw > width || by + bh > height) {
+            fprintf(stderr, "The geometry specified doesn't fit the screen!\n");
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        if (bx + bh > width || by + bw > height) {
+            fprintf(stderr, "The geometry specified doesn't fit the screen!\n");
+            exit(EXIT_FAILURE);
+        }
     }
 
     // Left is a positive number or zero therefore monitors with zero width are excluded
