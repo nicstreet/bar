@@ -163,9 +163,19 @@ rotate_pixmap(xcb_connection_t *c, xcb_pixmap_t from, xcb_pixmap_t to)
 {
     xcb_render_picture_t picture, pic_mask, back_pix;
     xcb_render_pictforminfo_t *fmt;
+    xcb_render_transform_t  transform;
     const xcb_render_query_pict_formats_reply_t *fmt_rep =
         xcb_render_util_query_formats(c);
+    double angle = M_PI / 180;
+    if (rotate_text == 1) {
+        angle *= 90;
+    } else {
+        angle *= -90;
+    }
+    double sina = sin(angle);
+    double cosa = cos(angle);
     uint32_t values[2];
+    xcb_rectangle_t p_size;
     fmt = xcb_render_util_find_standard_format(
             fmt_rep,
             XCB_PICT_STANDARD_ARGB_32
@@ -199,16 +209,6 @@ rotate_pixmap(xcb_connection_t *c, xcb_pixmap_t from, xcb_pixmap_t to)
             XCB_RENDER_CP_POLY_MODE|XCB_RENDER_CP_POLY_EDGE,
             values); // make it smooth
 
-    xcb_render_transform_t  transform;
-    double angle = M_PI / 180;
-    if (rotate_text == 1) {
-        angle *= 90;
-    } else {
-        angle *= -90;
-    }
-    double sina = sin(angle);
-    double cosa = cos(angle);
-
     transform.matrix11 = float_to_fixed(cosa);
     transform.matrix12 = float_to_fixed(sina);
     transform.matrix13 = float_to_fixed(0.0);
@@ -223,7 +223,7 @@ rotate_pixmap(xcb_connection_t *c, xcb_pixmap_t from, xcb_pixmap_t to)
 
     xcb_render_set_picture_transform_checked(c, picture, transform);
 
-    xcb_rectangle_t p_size = get_drawable_size(c, to);
+    p_size = get_drawable_size(c, to);
 
     xcb_render_composite_checked (c,
             XCB_RENDER_PICT_OP_SRC,
