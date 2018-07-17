@@ -900,8 +900,9 @@ monitor_new (int x, int y, int width, int height)
     if (rotate_text == 0) {
         ret->width = width;
     } else {
-        // don't shrink the bar
-        ret->width = bw;
+        // don't shrink the bar when a size is passed
+        // when a size isn't specified (==width) use the height instead
+        ret->width = (bw == width ? height : bw);
     }
     ret->next = ret->prev = NULL;
     ret->window = xcb_generate_id(c);
@@ -1001,7 +1002,7 @@ monitor_create_chain (xcb_rectangle_t *rects, const int num)
             exit(EXIT_FAILURE);
         }
     } else {
-        if (bx + bh > width || by + bw > height) {
+        if (bx != 0 && (bx + bh > width || by + bw > height)) {
             fprintf(stderr, "The geometry specified doesn't fit the screen!\n");
             exit(EXIT_FAILURE);
         }
