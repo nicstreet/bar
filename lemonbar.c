@@ -159,13 +159,12 @@ get_drawable_depth(xcb_connection_t *c, xcb_drawable_t drawable)
 
 
 void
-rotate_pixmap(xcb_connection_t *c, xcb_pixmap_t from, xcb_pixmap_t to)
+rotate_pixmap(xcb_connection_t *c, xcb_pixmap_t from, xcb_pixmap_t to,
+    xcb_render_pictformat_t fmtid)
 {
     xcb_render_picture_t picture, pic_mask, back_pix;
-    xcb_render_pictforminfo_t *fmt;
     xcb_render_transform_t  transform;
-    const xcb_render_query_pict_formats_reply_t *fmt_rep =
-        xcb_render_util_query_formats(c);
+
     double angle = M_PI / 180;
     if (rotate_text == 1) {
         angle *= 90;
@@ -176,10 +175,6 @@ rotate_pixmap(xcb_connection_t *c, xcb_pixmap_t from, xcb_pixmap_t to)
     double cosa = cos(angle);
     uint32_t values[2];
     xcb_rectangle_t p_size;
-    fmt = xcb_render_util_find_standard_format(
-            fmt_rep,
-            XCB_PICT_STANDARD_ARGB_32
-            );
 
     // create the picture with its attribute and format
     picture = xcb_generate_id(c);
@@ -191,21 +186,21 @@ rotate_pixmap(xcb_connection_t *c, xcb_pixmap_t from, xcb_pixmap_t to)
     xcb_render_create_picture_checked(c,
             picture, // pid
             from, // drawable from the user
-            fmt->id, // format
+            fmtid, // format
             XCB_RENDER_CP_POLY_MODE|XCB_RENDER_CP_POLY_EDGE,
             values); // make it smooth
 
     xcb_render_create_picture_checked(c,
             pic_mask, // pid
             to, // drawable from the user
-            fmt->id, // format
+            fmtid, // format
             XCB_RENDER_CP_POLY_MODE|XCB_RENDER_CP_POLY_EDGE,
             values); // make it smooth
 
     xcb_render_create_picture_checked(c,
             back_pix, // pid
             to, // drawable from the user
-            fmt->id, // format
+            fmtid, // format
             XCB_RENDER_CP_POLY_MODE|XCB_RENDER_CP_POLY_EDGE,
             values); // make it smooth
 
@@ -808,14 +803,16 @@ font_load (const char *pattern)
 
     xcb_query_font_cookie_t queryreq;
     xcb_query_font_reply_t *font_info;
+    xcb_generic_error_t* err;
     xcb_void_cookie_t cookie;
     xcb_font_t font;
 
     font = xcb_generate_id(c);
 
     cookie = xcb_open_font_checked(c, font, strlen(pattern), pattern);
-    if (xcb_request_check (c, cookie)) {
+    if ((err = xcb_request_check (c, cookie)) != NULL) {
         fprintf(stderr, "Could not load font \"%s\"\n", pattern);
+        free(err);
         return;
     }
 
@@ -882,6 +879,8 @@ set_ewmh_atoms (void)
                 0, 0, strut.top, strut.bottom);
         xcb_ewmh_set_wm_name(ewmh, mon->window, 3, "bar");
     }
+    xcb_ewmh_connection_wipe(ewmh);
+    free(ewmh);
 }
 
 monitor_t *
@@ -1405,6 +1404,9 @@ main (int argc, char **argv)
     xcb_generic_event_t *ev;
     xcb_expose_event_t *expose_ev;
     xcb_button_press_event_t *press_ev;
+    xcb_render_pictforminfo_t *fmt;
+    xcb_render_pictformat_t fmtid;
+    const xcb_render_query_pict_formats_reply_t *fmt_rep;
     char input[4096] = {0, };
     bool permanent = false;
     int geom_v[4] = { -1, -1, 0, 0 };
@@ -1491,6 +1493,13 @@ main (int argc, char **argv)
     // Get the fd to Xserver
     pollin[1].fd = xcb_get_file_descriptor(c);
 
+    fmt_rep = xcb_render_util_query_formats(c);
+    fmt = xcb_render_util_find_standard_format(
+            fmt_rep,
+            XCB_PICT_STANDARD_ARGB_32
+            );
+    fmtid = fmt->id;
+    xcb_render_util_disconnect(c);
 
     for (;;) {
         bool redraw = false;
@@ -1555,7 +1564,7 @@ main (int argc, char **argv)
                     xcb_change_gc(c, gc[GC_DRAW], XCB_GC_FOREGROUND, (const uint32_t []){ fgc.v });
                     xcb_poly_fill_rectangle(c, rotate_pmap, gc[GC_DRAW], 1, 
                               (const xcb_rectangle_t []){ { 0, 0, bh, mon->width } });
-                    rotate_pixmap(c, mon->pixmap, rotate_pmap);
+                    rotate_pixmap(c, mon->pixmap, rotate_pmap, fmtid);
                     xcb_copy_area(c, rotate_pmap, mon->window, gc[GC_DRAW], 0, 0, 0, 0, bh, mon->width);
                     xcb_free_pixmap(c, rotate_pmap);
                 } else {
@@ -1565,10 +1574,6 @@ main (int argc, char **argv)
         }
 
         xcb_flush(c);
-    }
-    if (ewmh != NULL) {
-        xcb_ewmh_connection_wipe(ewmh);
-        free(ewmh);
     }
 
     return EXIT_SUCCESS;
